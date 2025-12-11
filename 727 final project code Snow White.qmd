@@ -1,0 +1,792 @@
+---
+title: "Youtube Project"
+format: pdf
+editor: visual
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(tidyverse)
+```
+
+Get the Snow white box office data
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(rvest)
+library(RedditExtractoR)
+library(tidytext)
+library(ggwordcloud)
+library(stringr)
+library(scales)
+library(janitor)
+library(readr)
+```
+
+```{r}
+url <- "https://www.boxofficemojo.com/release/rl3856302849/"
+sw <- read_html(url)
+tables <- html_table (sw, fill = TRUE)
+length(tables)  
+```
+
+```{r}
+daily_raw_sw <- tables[[1]]
+head(daily_raw_sw)
+```
+
+Clean the data (make money into numbers, dates into Date)
+
+```{r}
+sw_dailybo <- daily_raw_sw %>%
+  rename(
+    date        = Date,
+    dow         = DOW,
+    rank        = Rank,
+    daily_gross = Daily,
+    pct_yesterday      = `%± YD`,
+    pct_lastweek      = `%± LW`,
+    theaters    = Theaters,
+    avg         = Avg,
+    gross_to_date     = `To Date`,
+    day_number  = Day
+  ) %>%
+  mutate(
+    date        = paste(date, "2025"),
+    date        = mdy(date),    # "Mar 4" -> 2016-03-04
+    daily_gross = parse_number(daily_gross), 
+    # "$19,500,008" -> 19500008
+    theaters    = parse_number(theaters),
+    avg         = parse_number(avg),
+    gross_to_date     = parse_number(gross_to_date),
+    day_number  = as.integer(day_number),
+    pct_yesterday = ifelse(pct_yesterday == "-", NA, parse_number(pct_yesterday)),
+    pct_lastweek = ifelse(pct_lastweek == "-", NA, parse_number(pct_lastweek))
+  ) %>%
+select(-Estimated) 
+
+head(sw_dailybo)
+
+```
+
+```{r}
+sw_dailybo %>%
+  ggplot(aes(x = date, y = daily_gross / 1e6)) +
+  geom_line(linewidth = 1, color = "#1f78b4") +
+  geom_point(size = 2, color = "#1f78b4") +
+  labs(
+    title = "Snow White Daily Box Office",
+    x = "Date",
+    y = "Daily box office (million USD)"
+  ) +
+  scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+scale_factor <- with(
+  sw_dailybo,
+  max(daily_gross, na.rm = TRUE) / max(abs(pct_yesterday), na.rm = TRUE)
+)
+
+ggplot(sw_dailybo, aes(x = date)) +
+  geom_col(aes(y = daily_gross), fill = "#9ecae1") +
+  
+  geom_line(aes(y = pct_yesterday * scale_factor), 
+            color = "#e34a33", linewidth = 1) +
+  geom_point(aes(y = pct_yesterday * scale_factor),
+             color = "#e34a33", size = 1.8) +
+  scale_y_continuous(
+    name = "Daily box office (USD)",
+    labels = label_dollar(big.mark = ",", accuracy = 1),
+    sec.axis = sec_axis(
+      ~ . / scale_factor,
+      name = "% change vs yesterday",
+      labels = label_number(accuracy = 1, suffix = "%")
+    )
+  ) +
+  labs(
+    title = "Snow White Daily Box Office & Day-over-Day Change",
+    x = "Date"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.y = element_text(color = "#3182bd"),
+    axis.title.y.right = element_text(color = "#e34a33"),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+```{r}
+IO2_dailybo <- IO2_dailybo %>%
+  mutate(movie = "Inside Out 2")
+
+sw_dailybo <- sw_dailybo %>%
+  mutate(movie = "Snow White")
+
+```
+
+```{r}
+library(dplyr)
+
+combined_bo <- bind_rows(IO2_dailybo, sw_dailybo)
+
+```
+
+```{r}
+ggplot(combined_bo, aes(x = day_number, y = daily_gross / 1e6, color = movie)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  labs(
+    title = "Daily Box Office Comparison: Inside Out 2 vs Snow White",
+    x = "Days Since Release",
+    y = "Daily Box Office (Million USD)",
+    color = "Movie"
+  ) +
+  scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+  theme_minimal(base_size = 14)
+
+```
+
+```{r}
+ggplot(combined_bo, 
+       aes(x = day_number, 
+           y = daily_gross / 1e6, 
+           color = movie)) +
+
+  # main line
+  geom_line(linewidth = 1, alpha = 0.9) +
+  
+  # smaller points
+  geom_point(size = 1.5, alpha = 0.85) +
+
+  # colors
+  scale_color_manual(values = c(
+    "Inside Out 2" = "#1f78b4",
+    "Snow White"   = "#e31a1c"
+  )) +
+
+  # y-axis in millions
+  scale_y_continuous(labels = scales::label_number(accuracy = 0.1)) +
+
+  labs(
+    title = "Daily Box Office Comparison",
+    subtitle = "Inside Out 2 vs Snow White",
+    x = "Days Since Release",
+    y = "Daily Box Office (Million USD)",
+    color = "Movie"
+  ) +
+  
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18),
+    plot.subtitle = element_text(size = 13, color = "gray40"),
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),  # Cleaner graph
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  )
+
+
+```
+
+```{r}
+api_key <- readLines("api_key.txt")
+```
+
+```{r}
+video_id <- "iV46TJKL8cU"
+```
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(tibble)
+
+get_youtube_comments <- function(video_id, api_key, max_pages = 50) {
+  base_url <- "https://www.googleapis.com/youtube/v3/commentThreads"
+  
+  all_items <- list()
+  page_token <- NULL
+  page <- 1
+  
+  repeat {
+    cat("Fetching page", page, "...\n")
+    
+    params <- list(
+      part = "snippet",
+      videoId = video_id,
+      key = api_key,
+      maxResults = 100,
+      textFormat = "plainText"
+    )
+    
+    if (!is.null(page_token)) {
+      params$pageToken <- page_token
+    }
+    
+    res <- GET(base_url, query = params)
+    
+    if (http_error(res)) {
+      stop("HTTP error: ", status_code(res))
+    }
+    
+    txt <- content(res, "text", encoding = "UTF-8")
+    dat <- fromJSON(txt)
+    
+    if (length(dat$items) == 0) {
+      cat("No more comments.\n")
+      break
+    }
+    
+    all_items[[page]] <- dat$items
+    
+    if (is.null(dat$nextPageToken)) {
+      cat("Reached last page.\n")
+      break
+    }
+    
+    page_token <- dat$nextPageToken
+    page <- page + 1
+    
+    if (page > max_pages) {
+      cat("Reached max_pages limit.\n")
+      break
+    }
+    
+    Sys.sleep(0.3)
+  }
+  
+  if (length(all_items) == 0) {
+    return(tibble(
+      author = character(),
+      comment = character(),
+      published_at = character(),
+      like_count = numeric(),
+      video_id = character()
+    ))
+  }
+  
+  items_df <- bind_rows(lapply(all_items, function(x) {
+    tibble(
+      author       = x$snippet$topLevelComment$snippet$authorDisplayName,
+      comment      = x$snippet$topLevelComment$snippet$textOriginal,
+      published_at = x$snippet$topLevelComment$snippet$publishedAt,
+      like_count   = x$snippet$topLevelComment$snippet$likeCount,
+      video_id     = video_id
+    )
+  }))
+  
+  return(items_df)
+}
+
+snowwhite_comments <- get_youtube_comments(
+  video_id  = video_id,
+  api_key   = api_key,
+  max_pages = 500     
+)
+
+```
+
+```{r}
+snowwhite_comments <- snowwhite_comments %>%
+  mutate(
+    published_at = as.POSIXct(published_at, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC"),
+    date = as.Date(published_at)
+  )
+
+min(snowwhite_comments$date)  # 看看最早能到哪天
+```
+
+```{r}
+snowwhite_3765 <- snowwhite_comments %>%
+  filter(
+    date >= as.Date("2025-03-07"),
+    date <= as.Date("2025-06-05")
+  )
+```
+
+sentiment analysis
+
+```{r}
+library(tidytext)
+library(tidyr)
+library(stringr)
+```
+
+```{r}
+data("stop_words")
+```
+
+```{r}
+snowwhite_tokens <- snowwhite_3765 %>%
+  select(date, comment) %>%
+  unnest_tokens(word, comment) %>%              
+  anti_join(stop_words, by = "word") %>%       
+  filter(
+    !str_detect(word, "[0-9]"),       
+    str_detect(word, "^[a-z]+$"),              
+    nchar(word) > 2                           
+  )
+```
+
+bing
+
+```{r}
+bing_snowwhite <- snowwhite_tokens %>%
+  inner_join(get_sentiments("bing"), by = "word") %>%
+  count(date, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+  mutate(net_sentiment = positive - negative)       # 净情绪（正面 - 负面）
+
+```
+
+```{r}
+bing_snowwhite %>%
+  ggplot(aes(x = date, y = net_sentiment)) +
+  geom_line(color = "#1f78b4", linewidth = 1) +
+  geom_point(size = 2, color = "#1f78b4") +
+  labs(
+    title = "Net Sentiment Trend (Positive - Negative)\nSnow White Trailer Comments (Mar 7 – Jun 5, 2025)",
+    x = "Date",
+    y = "Net Sentiment Score"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+normalize
+
+```{r}
+bing_snowwhite_norm <- snowwhite_tokens %>%
+  inner_join(get_sentiments("bing"), by = "word") %>%
+  count(date, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+  mutate(
+    total = positive + negative,
+    norm_sentiment = case_when(
+      total == 0 ~ 0,   # 避免除以 0
+      TRUE ~ (positive - negative) / total
+    )
+  )
+
+```
+
+```{r}
+bing_snowwhite_norm %>%
+  ggplot(aes(x = date, y = norm_sentiment)) +
+  geom_line(color = "#1f78b4", linewidth = 1) +
+  geom_point(size = 2, color = "#1f78b4") +
+  geom_smooth(method = "loess", se = FALSE, color = "red", linewidth = 0.5)+
+  labs(
+    title = "Normalized Sentiment Trend (Bing) — Snow White Comments",
+    x = "Date",
+    y = "Normalized Sentiment"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+```{r}
+combined_sw_1 <- bing_snowwhite_norm %>%
+  left_join(comment_count_sw, by = "date")
+```
+
+```{r}
+Sys.setlocale("LC_TIME", "C") 
+```
+
+```{r}
+# locale for English dates
+Sys.setlocale("LC_TIME", "C")
+```
+
+With new dash line for release date
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+scale_factor <- with(
+  combined_sw_1,
+  max(num_comments, na.rm = TRUE) / max(abs(norm_sentiment), na.rm = TRUE)
+)
+
+ggplot(combined_sw_1, aes(x = date)) +
+  geom_col(
+    aes(
+      y = -(num_comments / scale_factor),
+      fill = "Comments"
+    ),
+    color = NA,
+    alpha = 0.7
+  ) +
+  geom_hline(yintercept = 0, color = "grey60", linewidth = 0.4) +
+  geom_vline(
+    xintercept = as.Date("2025-03-21"),
+    linetype = "dashed",
+    color = "black",
+    linewidth = 0.6
+  ) +
+  geom_line(
+    aes(y = norm_sentiment, color = "Avg Sentiment"),
+    linewidth = 1
+  ) +
+  geom_point(
+    aes(y = norm_sentiment, color = "Avg Sentiment"),
+    size = 2
+  ) +
+  geom_smooth(
+    aes(y = norm_sentiment, color = "Trend Line"),
+    method = "loess",
+    se = FALSE,
+    linewidth = 0.5
+  ) +
+  scale_y_continuous(
+    name = "Normalized Sentiment",
+    sec.axis = sec_axis(
+      ~ . * (-scale_factor),
+      name = "Number of Comments"
+    )
+  ) +
+  scale_x_date(
+    date_breaks = "7 days",
+    date_labels = "%b %d"
+  ) +
+  scale_color_manual(
+    name = "",
+    values = c(
+      "Avg Sentiment" = "#1f78b4",
+      "Trend Line"    = "red"
+    )
+  ) +
+  scale_fill_manual(
+    name = "",
+    values = c("Comments" = "grey80")
+  ) +
+  
+  guides(
+    color = guide_legend(order = 1),
+    fill  = guide_legend(order = 2)
+  ) +
+  
+  labs(
+    title = "Sentiment & Comment Volume Over Time — Snow White",
+    x = "Date"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.y       = element_text(color = "#1f78b4"),
+    axis.title.y.right = element_text(color = "#5c5c5c"),
+    panel.grid.minor   = element_blank(),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    legend.position    = "top"
+  )
+
+```
+
+correlation (daily gross and sentiment/volume)
+
+```{r}
+combined_sw_cor <- combined_sw_1 %>%
+  select(date, norm_sentiment, num_comments)%>%
+  left_join(
+    sw_dailybo%>% select(date, daily_gross, pct_yesterday),
+    by = "date"
+  ) %>%
+  filter(date >= as.Date("2025-03-20"))
+
+```
+
+```{r}
+library(dplyr)
+
+combined_sw_cor <- combined_sw_cor %>%
+  arrange(date) %>%                     
+  mutate(next_day_gross = lead(daily_gross, 1))
+
+```
+
+```{r}
+cor_sent <- cor(combined_sw_cor$norm_sentiment,
+                combined_sw_cor$next_day_gross,
+                use = "complete.obs")
+
+cor_sent
+
+```
+
+```{r}
+cor_comments <- cor(combined_sw_cor$num_comments,
+                    combined_sw_cor$next_day_gross,
+                    use = "complete.obs")
+
+cor_comments
+
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(combined_sw_cor,
+       aes(x = norm_sentiment, y = next_day_gross)) +
+  geom_point(color = "#1f78b4", size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(
+    title = "Sentiment vs Next-Day Box Office (Snow White)",
+    x = "Sentiment Score",
+    y = "Next-Day Box Office"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+```{r}
+ggplot(combined_sw_cor,
+       aes(x = num_comments, y = next_day_gross)) +
+  geom_point(color = "steelblue", size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(
+    title = "Comment Volume vs Next-Day Box Office (Snow White)",
+    x = "Number of Comments",
+    y = "Next-Day Box Office"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+结合评论数和sentiment
+
+```{r}
+comment_count_sw <- snowwhite_3765 %>%
+  count(date, name = "num_comments")
+
+```
+
+```{r}
+combined_sw <- bing_snowwhite %>%
+  left_join(comment_count_sw, by = "date")
+
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(combined_sw, aes(x = date)) +
+  # 1. Sentiment line (left axis)
+  geom_line(aes(y = net_sentiment), 
+            color = "#1f78b4", 
+            size = 1.2) +
+  geom_point(aes(y = net_sentiment),
+             color = "#1f78b4", 
+             size = 2) +
+  
+  # 2. Comment count line (right axis)
+  geom_line(aes(y = num_comments / 5),     # scale down to match left axis
+            color = "#e41a1c", 
+            size = 1.2) +
+  geom_point(aes(y = num_comments / 5),
+             color = "#e41a1c", 
+             size = 2) +
+  
+  scale_y_continuous(
+    name = "Net Sentiment Score",
+    sec.axis = sec_axis(~ . * 5, name = "Number of Comments")  # invert scaling
+  ) +
+  
+  labs(
+    title = "Sentiment vs Comment Volume\nSnow White Trailer (Mar 7 – Jun 5, 2025)",
+    x = "Date"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.y = element_text(color = "#1f78b4", size = 13),
+    axis.title.y.right = element_text(color = "#e41a1c", size = 13)
+  )
+
+```
+
+word frequency
+
+```{r}
+word_counts_sw <- snowwhite_tokens %>%
+  count(word, sort = TRUE)
+
+head(word_counts_sw, 20)
+```
+
+```{r}
+word_counts_sw %>%
+  slice_max(n, n = 20) %>%                  
+  ggplot(aes(x = reorder(word, n), y = n)) +
+  geom_col() +
+  coord_flip() +                             
+  labs(
+    title = "Top 20 Word Frequencies in Snow White Trailer Comments",
+    x = "Word",
+    y = "Frequency"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+```{r}
+custom_stopwords <- tibble::tibble(
+  word = c("comments", "comment", "snow", "white", "snowwhite",
+           "movie", "movies", "film", "films", "trailer", "disney","people","time")
+)
+
+```
+
+```{r}
+snowwhite_tokens_clean <- snowwhite_tokens %>%
+  anti_join(custom_stopwords, by = "word")   # 去掉你不想要的词
+```
+
+```{r}
+word_counts_sw <- snowwhite_tokens_clean %>%
+  count(word, sort = TRUE)
+
+head(word_counts_sw, 30)
+
+```
+
+bar chart
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+word_counts_sw %>%
+  slice_max(n, n = 30) %>%      # 取前 30 词
+  mutate(word = reorder(word, n)) %>%   # 让 bar 按频率排序
+  ggplot(aes(x = word, y = n)) +
+  geom_col(fill = "#6baed6") +          # 柔和蓝色柱子
+  coord_flip() +                        # 横向柱图更清晰
+  labs(
+    title = "Top 30 Most Frequent Words in Snow White Comments",
+    x = "Word",
+    y = "Frequency"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+topic modelling
+
+```{r}
+snowwhite_tm <- snowwhite_3765 %>%
+  mutate(
+    doc_id  = row_number(),          
+    comment = tolower(comment),
+    comment = gsub("http\\S+|www\\S+", "", comment),
+    comment = gsub("[^a-z ]", " ", comment),
+    comment = gsub("\\s+", " ", comment)
+  )
+```
+
+```{r}
+library(tidytext)
+data(stop_words)
+
+tokens_sw <- snowwhite_tm %>%
+  unnest_tokens(word, comment) %>%
+  anti_join(stop_words, by = "word") %>% 
+  filter(nchar(word) > 2)                 
+
+```
+
+```{r}
+dtm_sw <- tokens_sw %>%
+  count(author, word) %>%       
+  cast_dtm(document = author, term = word, value = n)
+
+```
+
+```{r}
+snowwhite_tm$doc_id <- 1:nrow(snowwhite_tm)
+
+dtm_sw <- tokens_sw %>%
+  count(doc_id, word) %>%
+  cast_dtm(document = doc_id, term = word, value = n)
+
+```
+
+```{r}
+library(topicmodels)
+
+lda_sw <- LDA(dtm_sw, k = 4, control = list(seed = 1234))
+
+```
+
+```{r}
+library(tidytext)
+library(dplyr)
+
+topic_terms <- tidy(lda_sw, matrix = "beta")
+
+top_terms <- topic_terms %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 20) %>%
+  ungroup() %>%
+  arrange(topic, desc(beta))
+
+top_terms
+
+```
+
+```{r}
+top_terms %>%
+  group_by(topic) %>%
+  summarise(terms = paste(term, collapse = ", ")) %>%
+  arrange(topic)
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidytext) 
+
+top_terms %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 20) %>%                     
+  ungroup() %>%
+  ggplot(aes(x = reorder_within(term, beta, topic),  
+             y = beta,
+             fill = as.factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~ topic, scales = "free_y") +
+  scale_x_reordered() +                           
+  labs(
+    title = "Top Words per Topic (LDA)",
+    x = NULL,
+    y = "Term Importance (Beta)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text.y = element_text(size = 10)
+  )
+
+
+```
