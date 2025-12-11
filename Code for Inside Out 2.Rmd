@@ -1,0 +1,418 @@
+---
+title: "727 Final Project Code"
+author: "Yiyuan Li & Yiyang Shu"
+date: "2025-12-11"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(tidytext)
+library(stringr)
+library(RColorBrewer)
+library(tibble)
+library(tidyr)
+library(vader)
+```
+
+Youtube API
+```{r}
+api_key <- "AIzaSyDOS9Wr-YcUoMa9vmm7J8sxxYGmZCnO1iY"
+```
+
+Using API to access Youtube data
+```{r}
+get_youtube_comments <- function(video_id, api_key, max_pages = 126) {
+  base_url <- "https://www.googleapis.com/youtube/v3/commentThreads"
+  all_items <- list()
+  page_token <- NULL
+  page <- 1
+  
+  repeat {
+    cat("Fetching page", page, "...\n")
+    params <- list(
+      part = "snippet",
+      videoId = video_id,
+      key = api_key,
+      maxResults = 300,
+      textFormat = "plainText"
+    )
+    
+    if (!is.null(page_token)) {
+      params$pageToken <- page_token
+    }
+    
+    res <- GET(base_url, query = params)
+    
+    if (http_error(res)) {
+      stop("HTTP error: ", status_code(res))
+    }
+    
+    txt <- content(res, "text", encoding = "UTF-8")
+    dat <- fromJSON(txt)
+    
+    if (length(dat$items) == 0) {
+      cat("No more comments.\n")
+      break
+    }
+    
+    all_items[[page]] <- dat$items
+    
+    if (is.null(dat$nextPageToken)) {
+      cat("Reached last page.\n")
+      break
+    }
+    
+    page_token <- dat$nextPageToken
+    page <- page + 1
+    
+    if (page > max_pages) {
+      cat("Reached max_pages limit.\n")
+      break
+    }
+    
+    Sys.sleep(0.3)  
+  }
+  
+
+  if (length(all_items) == 0) {
+    return(tibble(
+      author = character(),
+      comment = character(),
+      published_at = character(),
+      like_count = numeric(),
+      video_id = character()
+    ))
+  }
+  
+  items_df <- bind_rows(lapply(all_items, function(x) {
+    tibble(
+      author = x$snippet$topLevelComment$snippet$authorDisplayName,
+      comment = x$snippet$topLevelComment$snippet$textOriginal,
+      published_at = x$snippet$topLevelComment$snippet$publishedAt,
+      like_count = x$snippet$topLevelComment$snippet$likeCount,
+      video_id = video_id
+    )
+  }))
+  return(items_df)
+}
+```
+
+Obtain the comments data from the official trailer comment section.
+```{r}
+inside_out2_id <- "LEjhY15eCx0"
+io2_comments <- get_youtube_comments(inside_out2_id, api_key)
+dim(io2_comments)      
+head(io2_comments)     
+```
+
+```{r}
+data <- io2_comments %>%
+  mutate(
+    published_at = as.POSIXct(published_at, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC"),
+    date = as.Date(published_at))
+```
+
+```{r}
+data <- data %>%
+  filter(date <= as.Date("2024-07-14") & date >= as.Date("2024-03-07"))
+```
+
+clean the comments for word frequency
+```{r}
+custom_stop <- tibble(
+  word = c(
+    "movie", "film", "watch", "trailer", "scene",
+    "pixar", "disney", "animation", 
+    "inside", "out", "guys", "omg", "yeah", "lol",
+    "wow", "gonna", "kinda", "literally", "honestly",
+    "riley", "joy", "sadness", "fear", "anger", "disgust", 
+  "envy", "embarrassment", "ennui", "anxiety", "emotions", "emotion",
+  "joyriley","joy", "riley", "rileys", "bing", "caseoh",
+  
+  "watched", "watching", "watch", 
+  "movie", "movies", "film", "filme",
+  "kids", "kid", "boy", "girl",
+  "character", "characters",
+
+  "jackson", "perez", "martinez", "moore", "rodriguez",
+  "williams", "lewis", "brown", "miller", "taylor",
+  "thompson", "garcia", "jones", "anderson", "clark",
+  
+  "bro", "lol", "omg", "hey", "wow", "idk",
+
+  "sequel", "release", "coming", "june", "birthday",
+
+  "hole", "chasm", "headquarters", "fire",
+
+  "added", "makes", "real", "life"
+  )
+)
+```
+
+```{r}
+remove_emoji <- function(x) {
+  x <- stringr::str_replace_all(x, "[^\x01-\x7F]", "")  
+  x
+}
+comments_clean <- data %>%
+  mutate(
+    comment = tolower(comment),
+    comment = remove_emoji(comment),                       
+    comment = str_replace_all(comment, "https?://\\S+", " "),
+    comment = str_replace_all(comment, "[^a-z\\s]", " "), 
+    comment = str_replace_all(comment, "\\s+", " ")
+  )
+```
+
+```{r}
+tokens <- comments_clean %>%
+  select(comment) %>%
+  unnest_tokens(word, comment)     
+```
+
+```{r}
+data("stop_words")
+tokens_clean <- tokens %>%
+  anti_join(stop_words, by="word") %>%
+  anti_join(custom_stop, by="word") %>%
+  filter(nchar(word) > 2)
+```
+
+word frequency and bar chart
+```{r}
+word_freq <- tokens_clean %>%
+  count(word, sort = TRUE) %>%
+  slice(1:30) %>%
+  mutate(word = fct_reorder(word, n))
+ggplot(word_freq, aes(x = word, y = n)) +
+  geom_col(fill = "#F28E2B") +
+  coord_flip() +
+  labs(
+    title = "Top 30 Most Frequent Words in Inside Out 2 Comments",
+    x = "Word",
+    y = "Frequency"
+  ) +
+  theme_minimal(base_size = 14)
+```
+sentiment analysis section
+
+data preparation
+```{r}
+clean_for_vader <- function(text) {
+  text <- gsub("http\\S+|www\\S+", "", text)        # remove URLs
+  text <- gsub("<.*?>", " ", text)                  # remove HTML tags
+  text <- gsub("&[a-z]+;", " ", text)               # remove HTML entities
+  text <- gsub("[\r\n]+", " ", text)                # remove line breaks
+  text <- trimws(text)
+  return(text)
+}
+```
+
+clean some character names that can be recognized as negative emotions.
+```{r}
+data$clean_comment <- 
+  sapply(data$comment, clean_for_vader)
+chars <- c("anxiety", "embarrassed", "embarrassment",
+           "disgust", "sadness", "envy", "ennui", 
+           "fear", "anger", "joy")
+clean_remove_chars <- function(text, chars) {
+  pattern <- paste0("\\b(", paste(chars, collapse = "|"), ")\\b")
+  gsub(pattern, "", text, ignore.case = TRUE)
+}
+data$clean_comment2 <- clean_remove_chars(data$clean_comment, chars)
+```
+
+```{r}
+results <- vader_df(data$clean_comment2)
+```
+
+labal the sentiments
+```{r}
+plot_df <- results %>%
+  mutate(sentiment = case_when(
+    compound >=  0.05 ~ "Positive",
+    compound <= -0.05 ~ "Negative",
+    TRUE ~ "Neutral"
+  ))
+```
+
+time series plot
+```{r}
+data$compound <- results$compound
+daily_summary <- data %>%
+  group_by(date) %>%
+  summarise(
+    avg_sentiment = mean(compound, na.rm = TRUE),
+    comment_count = n()
+  )
+```
+
+```{r}
+library(ggplot2)
+library(scales)
+
+daily_summary$comment_log <- log1p(daily_summary$comment_count)
+scale_factor <- max(daily_summary$avg_sentiment, na.rm = TRUE) /
+                max(daily_summary$comment_log, na.rm = TRUE)
+
+ggplot(daily_summary, aes(x = date)) +
+  geom_vline(xintercept = as.Date("2024-06-14"),
+           linetype = "dashed",
+           color = "black",
+           linewidth = 1) +
+  geom_bar(
+    aes(y = comment_log * scale_factor,
+        fill = "Comments (log)"),
+    stat = "identity",
+    alpha = 0.55
+  ) +
+  geom_line(aes(y = avg_sentiment, color = "Avg Sentiment"),
+            size = 1.3) +
+  geom_smooth(aes(y = avg_sentiment, color = "Trend Line"),
+              method = "loess", se = FALSE, size = 1.1, linetype = "dashed") +
+  scale_color_manual(values = c(
+    "Avg Sentiment"  = "#d62839",
+    "Trend Line"     = "#003049"
+  )) +）
+  scale_fill_manual(values = c(
+    "Comments (log)" = "#f4a261"   
+  )) +
+  scale_y_continuous(
+    name = "Average Sentiment",
+    sec.axis = sec_axis(~ . / scale_factor,
+                        name = "Comment Count (log1p)")
+  ) +
+  scale_x_date(date_breaks = "7 days", date_labels = "%b %d") +
+  labs(
+    title = "Sentiment and Comments Volume Over Time— Inside Out 2",
+    x = "",
+    color = ""
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5)
+  )
+```
+
+Obtain the box office data of Inside out 2
+```{r}
+library(readr)
+library(rvest)
+```
+
+```{r}
+url <- "https://www.boxofficemojo.com/release/rl3638199041/"
+white <- read_html(url)
+tables <- html_table(white, fill = TRUE)
+length(tables)  
+```
+
+```{r}
+tables[[1]] %>% head()
+```
+
+```{r}
+daily_raw_white <- tables[[1]]
+head(daily_raw_white)
+```
+
+Clean the data
+```{r}
+white_dailybo <- daily_raw_white %>%
+  rename(
+    date        = Date,
+    dow         = DOW,
+    rank        = Rank,
+    daily_gross = Daily,
+    pct_yesterday      = `%± YD`,
+    pct_lastweek      = `%± LW`,
+    theaters    = Theaters,
+    avg         = Avg,
+    gross_to_date     = `To Date`,
+    day_number  = Day
+  ) %>%
+  mutate(
+    date        = paste(date, "2024"),
+    date        = mdy(date),    # "Mar 4" -> 2016-03-04
+    daily_gross = parse_number(daily_gross), 
+    # "$19,500,008" -> 19500008
+    theaters    = parse_number(theaters),
+    avg         = parse_number(avg),
+    gross_to_date     = parse_number(gross_to_date),
+    day_number  = as.integer(day_number),
+    pct_yesterday = ifelse(pct_yesterday == "-", NA, parse_number(pct_yesterday)),
+    pct_lastweek = ifelse(pct_lastweek == "-", NA, parse_number(pct_lastweek))
+  ) 
+white_dailybo <- white_dailybo %>%
+  dplyr::select(-Estimated)
+head(white_dailybo)
+```
+
+visulization
+```{r}
+white_dailybo_2 <- white_dailybo %>%
+  filter(date <= as.Date("2024-07-14"))
+ggplot(white_dailybo_2, aes(x= date, y = daily_gross)) +
+  geom_line(color = "steelblue", size = 1) +
+  labs(title = "Daily Box Office Trend", x = "Date", y = "Daily Gross") +
+  scale_x_date(date_breaks = "5 days", date_labels = "%b %d") +
+  scale_y_continuous(
+    labels = function(x) paste0("$", round(x / 1e6, 2), "M")
+  )
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+Find the correlation between box office and sentiment score, volume. The methodology we used is the lagged correlation: does today's audience affect tomorrow's ticket sales? 
+
+Data preparation
+```{r}
+daily_summary_co <- daily_summary %>%
+  arrange(date) %>%
+  mutate(lag_avg_sentiment = lag(avg_sentiment, 1), lag_comment = lag(comment_count, 1)) %>%
+  filter(date >= "2024-06-14" & date <= "2024-07-14")
+cor_data <- daily_summary_co %>%
+  inner_join(white_dailybo_2, by = "date") %>%
+  select(date, lag_avg_sentiment, lag_comment, dow, daily_gross)
+```
+
+correlation results
+```{r}
+cor(cor_data$lag_avg_sentiment, cor_data$daily_gross)
+cor(cor_data$lag_comment, cor_data$daily_gross)
+```
+
+visualization
+```{r}
+ggplot(cor_data, aes(x = lag_avg_sentiment, y = daily_gross)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Sentiment Score vs. Next-Day Box Office (Inside Out 2)",
+    x = "Sentiment Score",
+    y = "Next-Day Box Office Revenue"
+  ) +
+  theme_minimal()
+
+ggplot(cor_data, aes(x = lag_comment, y = daily_gross)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Comments Volume vs. Next-Day Box Office (Inside Out 2)",
+    x = "Number of Comments",
+    y = "Next-Day Box Office Revenue"
+  ) +
+  theme_minimal()
+```
