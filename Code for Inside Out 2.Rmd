@@ -23,7 +23,7 @@ library(vader)
 
 Youtube API
 ```{r}
-api_key <- "AIzaSyDOS9Wr-YcUoMa9vmm7J8sxxYGmZCnO1iY"
+api_key <- "youtube api"
 ```
 
 Using API to access Youtube data
